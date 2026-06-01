@@ -1,6 +1,6 @@
 --[[
-    Телепорт-скрипт v7.4 (Rayfield)
-    - Обновленные эффекты: звук и частицы, как у Эндермена.
+    Телепорт-скрипт v7.7
+    - Добавлен HUD: отображение текущих координат в правом верхнем углу.
 --]]
 
 if not _G.Rayfield then
@@ -13,8 +13,8 @@ local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 local UIS = game:GetService("UserInputService")
 local Mouse = LP:GetMouse()
-local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 -- ========== ПЕРЕМЕННЫЕ ==========
 local homePos = nil
@@ -32,11 +32,18 @@ local currentABTarget = "A"
 
 local effectsEnabled = true
 local effectIntensity = 1
+local clickSoundEnabled = true
+local autoNotifyCounter = 0
 
--- Сохранение ID звука и текстуры для удобства (их можно менять в будущем)
-local ENDERMAN_SOUND_ID = "rbxassetid://93826112721753"
-local PARTICLE_TEXTURE_ID = "rbxassetid://0"  -- 0 значит стандартная текстура, но мы настроим цвет
+-- HUD
+local showHUD = true
+local hudColor = Color3.fromRGB(255, 255, 255)
+local hudBgColor = Color3.fromRGB(0, 0, 0)
+local hudTransparency = 0.5
+local hudFrame = nil
+local hudLabel = nil
 
+-- Настройки (сохраняемые)
 local settings = {
     randXmin = -1000,
     randXmax = 1000,
@@ -44,26 +51,117 @@ local settings = {
     randYmax = 200,
     randZmin = -1000,
     randZmax = 1000,
-    loopDelay = 1.0,
+    loopDelay = 1.5,
     returnEvery = 3,
     followDistance = 4,
     followInterval = 0.6,
+    abLoopDelay = 1.0,
 }
 
+-- Последние введённые координаты
+local lastCoords = {x = "0", y = "100", z = "0"}
+
+local ENDERMAN_SOUND_ID = "rbxassetid://93826112721753"
+local CLICK_SOUND_ID = "rbxassetid://9120383236"
+
+-- ========== HUD ФУНКЦИИ ==========
+local function createHUD()
+    if hudFrame then hudFrame:Destroy() end
+    if not showHUD then return end
+    
+    local screenGui = LP:FindFirstChild("TeleportHUD")
+    if not screenGui then
+        screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "TeleportHUD"
+        screenGui.Parent = LP:WaitForChild("PlayerGui")
+        screenGui.ResetOnSpawn = false
+    end
+    
+    hudFrame = Instance.new("Frame")
+    hudFrame.Name = "CoordFrame"
+    hudFrame.Parent = screenGui
+    hudFrame.Size = UDim2.new(0, 180, 0, 60)
+    hudFrame.Position = UDim2.new(1, -190, 0, 10)
+    hudFrame.BackgroundColor3 = hudBgColor
+    hudFrame.BackgroundTransparency = hudTransparency
+    hudFrame.BorderSizePixel = 1
+    hudFrame.BorderColor3 = Color3.fromRGB(100, 100, 100)
+    hudFrame.Active = true
+    hudFrame.Draggable = true  -- можно перетаскивать мышкой
+    Instance.new("UICorner", hudFrame).CornerRadius = UDim.new(0, 8)
+    
+    local title = Instance.new("TextLabel")
+    title.Parent = hudFrame
+    title.Size = UDim2.new(1, 0, 0, 20)
+    title.BackgroundTransparency = 1
+    title.Text = "📍 Текущие координаты"
+    title.TextColor3 = Color3.fromRGB(200, 200, 200)
+    title.TextSize = 12
+    title.Font = Enum.Font.Gotham
+    
+    hudLabel = Instance.new("TextLabel")
+    hudLabel.Parent = hudFrame
+    hudLabel.Size = UDim2.new(1, 0, 0, 35)
+    hudLabel.Position = UDim2.new(0, 0, 0, 22)
+    hudLabel.BackgroundTransparency = 1
+    hudLabel.Text = "X: 0\nY: 0\nZ: 0"
+    hudLabel.TextColor3 = hudColor
+    hudLabel.TextSize = 14
+    hudLabel.Font = Enum.Font.GothamBold
+    hudLabel.TextXAlignment = Enum.TextXAlignment.Center
+end
+
+local function updateHUD()
+    if not showHUD or not hudLabel then return end
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local pos = hrp.Position
+        hudLabel.Text = string.format("X: %.0f\nY: %.0f\nZ: %.0f", pos.X, pos.Y, pos.Z)
+    else
+        hudLabel.Text = "X: ---\nY: ---\nZ: ---"
+    end
+end
+
+local function destroyHUD()
+    if hudFrame then hudFrame:Destroy(); hudFrame = nil end
+    local screenGui = LP:FindFirstChild("TeleportHUD")
+    if screenGui then screenGui:Destroy() end
+end
+
+local function toggleHUD(val)
+    showHUD = val
+    if showHUD then
+        createHUD()
+        updateHUD()
+        -- запускаем обновление, если ещё не запущено
+        if not _hudUpdateConn then
+            _hudUpdateConn = RunService.Heartbeat:Connect(updateHUD)
+        end
+    else
+        destroyHUD()
+        if _hudUpdateConn then _hudUpdateConn:Disconnect(); _hudUpdateConn = nil end
+    end
+end
+
 -- ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+local function playClickSound()
+    if clickSoundEnabled and effectsEnabled then
+        local sound = Instance.new("Sound")
+        sound.SoundId = CLICK_SOUND_ID
+        sound.Volume = 0.2 * effectIntensity
+        sound.Parent = LP.Character or LP
+        sound:Play()
+        game:GetService("Debris"):AddItem(sound, 1)
+    end
+end
+
 local function teleport(pos)
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-    
-    -- Сохраняем старую позицию для эффектов (если нужно)
-    local oldPos = hrp.Position
-    
-    -- Выполняем телепорт
     hrp.CFrame = CFrame.new(pos)
     
-    -- Визуальные и звуковые эффекты
     if effectsEnabled then
-        -- 1. Звук Эндермена
+        -- Звук Эндермена
         local sound = Instance.new("Sound")
         sound.SoundId = ENDERMAN_SOUND_ID
         sound.Volume = 0.5 * effectIntensity
@@ -71,90 +169,97 @@ local function teleport(pos)
         sound:Play()
         game:GetService("Debris"):AddItem(sound, 1)
         
-        -- 2. Частицы, как у Эндермена (фиолетовая дымка)
-        -- Создаем временный эмиттер
+        -- Частицы
         local particleEmitter = Instance.new("ParticleEmitter")
         particleEmitter.Parent = hrp
-        
-        -- Настройки частиц для имитации эффекта Эндермена
-        particleEmitter.Texture = PARTICLE_TEXTURE_ID  -- Стандартная текстура
-        particleEmitter.Rate = 300 * effectIntensity  -- Много частиц
-        particleEmitter.Lifetime = NumberRange.new(0.6)  -- Живут 0.6 секунды
-        particleEmitter.SpreadAngle = Vector2.new(360, 360)  -- Летят во все стороны
-        particleEmitter.VelocityInheritance = 0
-        particleEmitter.Speed = NumberRange.new(8)  -- Средняя скорость
+        particleEmitter.Rate = 300 * effectIntensity
+        particleEmitter.Lifetime = NumberRange.new(0.6)
+        particleEmitter.SpreadAngle = Vector2.new(360, 360)
+        particleEmitter.Speed = NumberRange.new(8)
         particleEmitter.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.7),  -- В начале почти непрозрачные
-            NumberSequenceKeypoint.new(1, 1),    -- В конце полностью прозрачные
+            NumberSequenceKeypoint.new(0, 0.7),
+            NumberSequenceKeypoint.new(1, 1),
         })
-        -- Цвета, как у портала Эндермена: от ярко-фиолетового до темно-фиолетового
         particleEmitter.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(180, 80, 255)), -- Яркий фиолетовый
-            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(100, 0, 200)), -- Темный фиолетовый
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 0, 120)),    -- Почти черный
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(180, 80, 255)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(100, 0, 200)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 0, 120)),
         })
-        particleEmitter.Size = NumberSequence.new(1.5)  -- Размер частиц
-        particleEmitter.Rotation = NumberRange.new(0, 360)  -- Случайный поворот
-        -- Добавляем гравитацию, чтобы частицы "падали", как дым
+        particleEmitter.Size = NumberSequence.new(1.5)
+        particleEmitter.Rotation = NumberRange.new(0, 360)
         particleEmitter.Acceleration = Vector3.new(0, -5, 0)
-        
-        -- Активируем и сразу останавливаем эмиттер, чтобы он выпустил один импульс частиц
         particleEmitter.Enabled = true
         task.wait(0.05)
         particleEmitter.Enabled = false
-        
-        -- Удаляем эмиттер через секунду, чтобы он не засорял память
         game:GetService("Debris"):AddItem(particleEmitter, 1)
         
-        -- 3. Небольшая визуальная вспышка на экране (опционально)
-        local flash = Instance.new("Frame")
-        flash.Size = UDim2.new(2, 0, 2, 0)
-        flash.Position = UDim2.new(-0.5, 0, -0.5, 0)
-        flash.BackgroundColor3 = Color3.fromRGB(100, 0, 150) -- Фиолетовый цвет вспышки
-        flash.BackgroundTransparency = 0.6
-        flash.BorderSizePixel = 0
-        local gui = LP:FindFirstChild("PlayerGui")
-        if gui then
-            flash.Parent = gui
-            flash.ZIndex = 999
-            TweenService:Create(flash, TweenInfo.new(0.2, Enum.EasingStyle.Linear), {BackgroundTransparency = 1}):Play()
-            game:GetService("Debris"):AddItem(flash, 0.3)
+        -- Вспышка
+        if effectIntensity > 0.5 then
+            local flash = Instance.new("Frame")
+            flash.Size = UDim2.new(2, 0, 2, 0)
+            flash.Position = UDim2.new(-0.5, 0, -0.5, 0)
+            flash.BackgroundColor3 = Color3.fromRGB(100, 0, 150)
+            flash.BackgroundTransparency = 0.6
+            flash.BorderSizePixel = 0
+            local gui = LP:FindFirstChild("PlayerGui")
+            if gui then
+                flash.Parent = gui
+                flash.ZIndex = 999
+                TweenService:Create(flash, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+                game:GetService("Debris"):AddItem(flash, 0.3)
+            end
         end
     end
 end
 
-local function sendNotify(title, content, duration)
-    Rayfield:Notify({Title = title or "Телепорт", Content = content or "", Duration = duration or 2})
+local function sendNotify(title, content, duration, icon)
+    Rayfield:Notify({
+        Title = title,
+        Content = content,
+        Duration = duration or 2,
+        Image = icon or 4483362458,
+    })
+end
+
+local function autoNotify(msg)
+    autoNotifyCounter = autoNotifyCounter + 1
+    if autoNotifyCounter % 5 == 1 then
+        sendNotify("Автоцикл", msg, 1)
+    end
 end
 
 local function tpToCoords(x, y, z)
     x = tonumber(x) or 0
     y = tonumber(y) or 50
     z = tonumber(z) or 0
+    lastCoords = {x = tostring(x), y = tostring(y), z = tostring(z)}
     teleport(Vector3.new(x, y, z))
-    sendNotify("Телепорт", string.format("(%.0f, %.0f, %.0f)", x, y, z))
+    sendNotify("📍 Телепорт", string.format("(%.0f, %.0f, %.0f)", x, y, z), 1)
 end
 
+-- Дом
 local function setHome()
+    playClickSound()
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
         homePos = hrp.Position
-        sendNotify("Дом", "Сохранён: " .. tostring(homePos))
+        sendNotify("🏠 Дом", string.format("Сохранён (%.0f, %.0f, %.0f)", homePos.X, homePos.Y, homePos.Z), 2)
     else
-        sendNotify("Ошибка", "Не удалось сохранить дом", 3)
+        sendNotify("❌ Ошибка", "Не удалось сохранить дом", 3)
     end
 end
 
 local function goHome()
+    playClickSound()
     if homePos then
         teleport(homePos)
-        sendNotify("Дом", "Возврат")
+        sendNotify("🏠 Дом", "Возврат", 1)
     else
-        sendNotify("Ошибка", "Дом не установлен", 3)
+        sendNotify("⚠️ Ошибка", "Дом не установлен", 3)
     end
 end
 
--- Автоцикл (случайные точки)
+-- Автоцикл
 local function randomPos()
     local x = math.random(settings.randXmin, settings.randXmax)
     local y = math.random(settings.randYmin, settings.randYmax)
@@ -169,9 +274,9 @@ local function autoStep()
     stepCount = stepCount + 1
     if settings.returnEvery > 0 and homePos and stepCount % settings.returnEvery == 0 then
         teleport(homePos)
-        sendNotify("Автоцикл", "Возврат домой (шаг " .. stepCount .. ")")
+        autoNotify("🏠 Возврат домой (шаг " .. stepCount .. ")")
     else
-        sendNotify("Автоцикл", string.format("#%d → (%.0f, %.0f, %.0f)", stepCount, target.X, target.Y, target.Z))
+        autoNotify(string.format("Шаг #%d → (%.0f, %.0f, %.0f)", stepCount, target.X, target.Y, target.Z))
     end
 end
 
@@ -179,7 +284,8 @@ local function startAuto()
     if autoActive then return end
     autoActive = true
     stepCount = 0
-    sendNotify("Автоцикл", "Запущен")
+    autoNotifyCounter = 0
+    sendNotify("🔄 Автоцикл", "Запущен", 1)
     autoCoroutine = task.spawn(function()
         while autoActive do
             autoStep()
@@ -192,31 +298,31 @@ local function stopAuto()
     if not autoActive then return end
     autoActive = false
     if autoCoroutine then task.cancel(autoCoroutine); autoCoroutine = nil end
-    sendNotify("Автоцикл", "Остановлен")
+    sendNotify("🔄 Автоцикл", "Остановлен", 1)
 end
 
--- ========== РЕЖИМ СЛЕДОВАНИЯ ==========
+-- Следование
 local function stopFollow()
     if followActive then
         followActive = false
         if followCoroutine then task.cancel(followCoroutine); followCoroutine = nil end
-        sendNotify("Следование", "Остановлено")
+        sendNotify("👥 Следование", "Остановлено", 1)
     end
 end
 
 local function startFollow()
     if selectedPlayer == "" or selectedPlayer == "(нет игроков)" then
-        sendNotify("Ошибка", "Сначала выберите игрока", 2)
+        sendNotify("❌ Ошибка", "Сначала выберите игрока", 2)
         return
     end
     if followActive then stopFollow() end
     followActive = true
-    sendNotify("Следование", "Включено для " .. selectedPlayer)
+    sendNotify("👥 Следование", "Включено для " .. selectedPlayer, 1)
     followCoroutine = task.spawn(function()
         while followActive do
             local target = Players:FindFirstChild(selectedPlayer)
             if not target or not target.Character then
-                sendNotify("Следование", "Игрок покинул игру", 2)
+                sendNotify("👥 Следование", "Игрок покинул игру", 2)
                 stopFollow()
                 break
             end
@@ -227,7 +333,7 @@ local function startFollow()
                 continue
             end
             if hum.Health <= 0 then
-                sendNotify("Следование", "Игрок умер, следование прекращено", 2)
+                sendNotify("👥 Следование", "Игрок умер, следование прекращено", 2)
                 stopFollow()
                 break
             end
@@ -240,8 +346,9 @@ local function startFollow()
 end
 
 local function teleportToPlayerOnce()
+    playClickSound()
     if selectedPlayer == "" or selectedPlayer == "(нет игроков)" then
-        sendNotify("Ошибка", "Нет выбранного игрока", 2)
+        sendNotify("❌ Ошибка", "Нет выбранного игрока", 2)
         return
     end
     local target = Players:FindFirstChild(selectedPlayer)
@@ -249,30 +356,42 @@ local function teleportToPlayerOnce()
         local pos = target.Character.HumanoidRootPart.Position
         local offset = Vector3.new(2, 0, 2)
         teleport(pos + offset)
-        sendNotify("Телепорт", "К игроку " .. target.DisplayName .. " (один раз)")
+        sendNotify("🎯 Телепорт", "К игроку " .. target.DisplayName, 1)
     else
-        sendNotify("Ошибка", "Игрок не найден или нет персонажа", 3)
+        sendNotify("❌ Ошибка", "Игрок не найден или нет персонажа", 3)
     end
 end
 
--- ========== ЦИКЛ A-B ==========
+-- Цикл A-B
 local function setPointA()
+    playClickSound()
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
         pointA = hrp.Position
-        sendNotify("Цикл A-B", "Точка A сохранена: " .. tostring(pointA))
+        sendNotify("🔵 Цикл A-B", "Точка A сохранена", 1)
     else
-        sendNotify("Ошибка", "Не удалось сохранить точку A", 3)
+        sendNotify("❌ Ошибка", "Не удалось сохранить точку A", 3)
     end
 end
 
 local function setPointB()
+    playClickSound()
     local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if hrp then
         pointB = hrp.Position
-        sendNotify("Цикл A-B", "Точка B сохранена: " .. tostring(pointB))
+        sendNotify("🔴 Цикл A-B", "Точка B сохранена", 1)
     else
-        sendNotify("Ошибка", "Не удалось сохранить точку B", 3)
+        sendNotify("❌ Ошибка", "Не удалось сохранить точку B", 3)
+    end
+end
+
+local function swapAB()
+    playClickSound()
+    if pointA and pointB then
+        pointA, pointB = pointB, pointA
+        sendNotify("🔄 Цикл A-B", "Точки A и B поменяны местами", 1)
+    else
+        sendNotify("⚠️ Ошибка", "Сначала установите обе точки", 2)
     end
 end
 
@@ -280,19 +399,20 @@ local function stopLoopAB()
     if loopABActive then
         loopABActive = false
         if loopABCoroutine then task.cancel(loopABCoroutine); loopABCoroutine = nil end
-        sendNotify("Цикл A-B", "Остановлен")
+        sendNotify("🔁 Цикл A-B", "Остановлен", 1)
     end
 end
 
 local function startLoopAB()
+    playClickSound()
     if not pointA or not pointB then
-        sendNotify("Ошибка", "Сначала установите точки A и B", 3)
+        sendNotify("❌ Ошибка", "Сначала установите точки A и B", 3)
         return
     end
     if loopABActive then stopLoopAB() end
     loopABActive = true
     currentABTarget = "A"
-    sendNotify("Цикл A-B", "Запущен (A → B → A ...)")
+    sendNotify("🔁 Цикл A-B", "Запущен (A → B → A ...)", 1)
     loopABCoroutine = task.spawn(function()
         while loopABActive do
             if currentABTarget == "A" then
@@ -302,12 +422,39 @@ local function startLoopAB()
                 teleport(pointB)
                 currentABTarget = "A"
             end
-            task.wait(settings.loopDelay)
+            task.wait(settings.abLoopDelay)
         end
     end)
 end
 
--- ========== СПИСОК ИГРОКОВ ==========
+-- Копирование координат
+local function copyCurrentCoords()
+    playClickSound()
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local pos = hrp.Position
+        lastCoords = {x = tostring(math.floor(pos.X)), y = tostring(math.floor(pos.Y)), z = tostring(math.floor(pos.Z))}
+        if Window.Flags then
+            Window.Flags.tpX = lastCoords.x
+            Window.Flags.tpY = lastCoords.y
+            Window.Flags.tpZ = lastCoords.z
+        end
+        sendNotify("📋 Координаты", string.format("Скопированы: (%s, %s, %s)", lastCoords.x, lastCoords.y, lastCoords.z), 1)
+    else
+        sendNotify("❌ Ошибка", "Не удалось определить текущую позицию", 2)
+    end
+end
+
+-- Стоп всё
+local function stopAll()
+    playClickSound()
+    if autoActive then stopAuto() end
+    if followActive then stopFollow() end
+    if loopABActive then stopLoopAB() end
+    sendNotify("🛑 Стоп всё", "Все активные режимы остановлены", 2)
+end
+
+-- Список игроков
 local function getPlayerList()
     local names = {}
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -322,21 +469,23 @@ end
 
 -- ========== GUI ==========
 local Window = Rayfield:CreateWindow({
-    Name = "Телепорт v7.4",
+    Name = "Телепорт v7.7",
     ConfigurationSaving = { Enabled = true, FolderName = "TeleportScript", FileName = "Settings" },
     KeySystem = false,
 })
 
 -- Вкладка "Телепорт"
 local tpTab = Window:CreateTab("Телепорт", 4483362458)
-tpTab:CreateInput({ Name = "X", CurrentValue = "0", Flag = "tpX", Callback = function() end })
-tpTab:CreateInput({ Name = "Y", CurrentValue = "100", Flag = "tpY", Callback = function() end })
-tpTab:CreateInput({ Name = "Z", CurrentValue = "0", Flag = "tpZ", Callback = function() end })
+tpTab:CreateInput({ Name = "X", CurrentValue = lastCoords.x, Flag = "tpX", Callback = function(v) lastCoords.x = v end })
+tpTab:CreateInput({ Name = "Y", CurrentValue = lastCoords.y, Flag = "tpY", Callback = function(v) lastCoords.y = v end })
+tpTab:CreateInput({ Name = "Z", CurrentValue = lastCoords.z, Flag = "tpZ", Callback = function(v) lastCoords.z = v end })
+tpTab:CreateButton({ Name = "📋 Считать текущие координаты", Callback = copyCurrentCoords })
 tpTab:CreateKeybind({ Name = "ТП по координатам", CurrentKeybind = "T", Flag = "tpBind", Callback = function()
     tpToCoords(Window.Flags.tpX, Window.Flags.tpY, Window.Flags.tpZ)
 end })
 tpTab:CreateKeybind({ Name = "Установить дом", CurrentKeybind = "H", Callback = setHome })
 tpTab:CreateKeybind({ Name = "Вернуться домой", CurrentKeybind = "G", Callback = goHome })
+tpTab:CreateButton({ Name = "🛑 Стоп всё", Callback = stopAll })
 
 -- Вкладка "Автоцикл"
 local autoTab = Window:CreateTab("Автоцикл", 4483362458)
@@ -368,25 +517,45 @@ playerTab:CreateSlider({ Name = "Интервал следования (сек)"
 
 -- Вкладка "Цикл A-B"
 local abTab = Window:CreateTab("Цикл A-B", 4483362458)
-abTab:CreateButton({ Name = "Установить точку A", Callback = setPointA })
-abTab:CreateButton({ Name = "Установить точку B", Callback = setPointB })
-abTab:CreateButton({ Name = "Старт цикл (A->B->A...)", Callback = startLoopAB })
-abTab:CreateButton({ Name = "Стоп цикл", Callback = stopLoopAB })
+abTab:CreateButton({ Name = "🔵 Установить точку A", Callback = setPointA })
+abTab:CreateButton({ Name = "🔴 Установить точку B", Callback = setPointB })
+abTab:CreateButton({ Name = "🔄 Поменять A и B местами", Callback = swapAB })
+abTab:CreateSlider({ Name = "Задержка между точками (сек)", Range = {0.2,10}, Increment=0.1, CurrentValue=settings.abLoopDelay, Flag="abLoopDelay", Callback=function(v) settings.abLoopDelay=v end })
+abTab:CreateButton({ Name = "▶ Старт цикл (A->B->A...)", Callback = startLoopAB })
+abTab:CreateButton({ Name = "⏹ Стоп цикл", Callback = stopLoopAB })
 
--- Вкладка "Эффекты" (обновленная)
+-- Вкладка "Эффекты"
 local effectTab = Window:CreateTab("Эффекты", 4483362458)
 effectTab:CreateToggle({ Name = "Включить визуальные эффекты", CurrentValue = true, Flag = "effectsEnabled", Callback = function(val) effectsEnabled = val end })
 effectTab:CreateSlider({ Name = "Интенсивность эффектов", Range = {0, 2}, Increment = 0.1, CurrentValue = 1, Flag = "effectIntensity", Callback = function(val) effectIntensity = val end })
-effectTab:CreateDivider()
-effectTab:CreateParagraph({ Title = "Информация", Content = "Теперь эффекты телепорта звучат и выглядят, как телепортация Эндермена из Minecraft. Частицы имеют фиолетовый цвет и разлетаются в стороны, а звук — оригинальный из игры." })
+effectTab:CreateToggle({ Name = "Звук кликов по кнопкам", CurrentValue = true, Flag = "clickSoundEnabled", Callback = function(val) clickSoundEnabled = val end })
+
+-- Вкладка "HUD"
+local hudTab = Window:CreateTab("HUD", 4483362458)
+hudTab:CreateToggle({ Name = "Показывать координаты", CurrentValue = true, Flag = "showHUD", Callback = toggleHUD })
+hudTab:CreateColorPicker({ Name = "Цвет текста", Color = hudColor, Flag = "hudTextColor", Callback = function(c)
+    hudColor = c
+    if hudLabel then hudLabel.TextColor3 = hudColor end
+end })
+hudTab:CreateColorPicker({ Name = "Цвет фона", Color = hudBgColor, Flag = "hudBgColor", Callback = function(c)
+    hudBgColor = c
+    if hudFrame then hudFrame.BackgroundColor3 = hudBgColor end
+end })
+hudTab:CreateSlider({ Name = "Прозрачность фона", Range = {0, 1}, Increment = 0.05, CurrentValue = hudTransparency, Flag = "hudTransparency", Callback = function(v)
+    hudTransparency = v
+    if hudFrame then hudFrame.BackgroundTransparency = hudTransparency end
+end })
 
 -- Вкладка UI
 local uiTab = Window:CreateTab("UI", 4483362458)
 uiTab:CreateKeybind({ Name = "Открыть меню", CurrentKeybind = "RightShift", Flag = "menuBind", Callback = function() end })
+uiTab:CreateParagraph({ Title = "Горячие клавиши", Content = "T — телепорт по координатам\nH — установить дом\nG — вернуться домой\nC — телепорт к выбранному игроку" })
 
 -- ========== ЗАГРУЗКА НАСТРОЕК ==========
 Rayfield:LoadConfiguration()
 task.wait(0.5)
+
+-- Восстановление настроек
 settings.randXmin = Window.Flags.randXmin or settings.randXmin
 settings.randXmax = Window.Flags.randXmax or settings.randXmax
 settings.randYmin = Window.Flags.randYmin or settings.randYmin
@@ -397,11 +566,28 @@ settings.loopDelay = Window.Flags.loopDelay or settings.loopDelay
 settings.returnEvery = tonumber(Window.Flags.returnEvery) or settings.returnEvery
 settings.followDistance = Window.Flags.followDistance or settings.followDistance
 settings.followInterval = Window.Flags.followInterval or settings.followInterval
+settings.abLoopDelay = Window.Flags.abLoopDelay or settings.abLoopDelay
 selectedPlayer = Window.Flags.targetPlayer or ""
 effectsEnabled = (Window.Flags.effectsEnabled == nil) and true or Window.Flags.effectsEnabled
 effectIntensity = Window.Flags.effectIntensity or 1
+clickSoundEnabled = (Window.Flags.clickSoundEnabled == nil) and true or Window.Flags.clickSoundEnabled
 
+-- HUD настройки
+showHUD = (Window.Flags.showHUD == nil) and true or Window.Flags.showHUD
+hudColor = Window.Flags.hudTextColor or hudColor
+hudBgColor = Window.Flags.hudBgColor or hudBgColor
+hudTransparency = Window.Flags.hudTransparency or hudTransparency
+
+-- Восстановление последних координат
+lastCoords.x = Window.Flags.tpX or "0"
+lastCoords.y = Window.Flags.tpY or "100"
+lastCoords.z = Window.Flags.tpZ or "0"
+
+-- Запуск HUD
+toggleHUD(showHUD)
+
+-- Автозапуск режимов
 if Window.Flags.autoLoopEnabled then startAuto() end
 if Window.Flags.followEnabled then startFollow() end
 
-sendNotify("Готово", "Телепорт v7.4 загружен. Меню: RightShift", 3)
+sendNotify("✅ Готово", "Телепорт v7.7 загружен. Меню: RightShift", 3)
