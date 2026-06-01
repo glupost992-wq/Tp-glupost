@@ -1,0 +1,363 @@
+--[[
+    Телепорт-скрипт v7.1 (Rayfield)
+    - Мгновенный ТП по координатам
+    - Дом (установить / вернуться)
+    - Автоцикл со случайными координатами и автовозвратом
+    - ТП к игроку из списка
+    - Полное сохранение настроек
+    - Горячие клавиши через Rayfield (бинды)
+--]]
+
+-- ========== 1. ЗАГРУЗКА RAYFIELD ==========
+if not _G.Rayfield then
+    local RayfieldSource = game:HttpGet("https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua")
+    _G.Rayfield = loadstring(RayfieldSource)()
+end
+local Rayfield = _G.Rayfield
+
+-- ========== 2. ОБЩИЕ ПЕРЕМЕННЫЕ ==========
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer
+local UIS = game:GetService("UserInputService")
+local Mouse = LP:GetMouse()
+
+local homePos = nil
+local autoActive = false
+local autoCoroutine = nil
+local selectedPlayer = ""
+
+-- Настройки (будут сохранены)
+local settings = {
+    randXmin = -1000,
+    randXmax = 1000,
+    randYmin = 50,
+    randYmax = 200,
+    randZmin = -1000,
+    randZmax = 1000,
+    loopDelay = 1.0,
+    returnEvery = 3,
+}
+
+-- ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+local function teleport(pos)
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then hrp.CFrame = CFrame.new(pos) end
+end
+
+local function sendNotify(title, content, duration)
+    Rayfield:Notify({Title = title or "Телепорт", Content = content or "", Duration = duration or 2})
+end
+
+-- Телепорт по координатам
+local function tpToCoords(x, y, z)
+    x = tonumber(x) or 0
+    y = tonumber(y) or 50
+    z = tonumber(z) or 0
+    teleport(Vector3.new(x, y, z))
+    sendNotify("Телепорт", string.format("(%.0f, %.0f, %.0f)", x, y, z))
+end
+
+-- Дом
+local function setHome()
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        homePos = hrp.Position
+        sendNotify("Дом", "Сохранён: " .. tostring(homePos))
+    else
+        sendNotify("Ошибка", "Не удалось сохранить дом", 3)
+    end
+end
+
+local function goHome()
+    if homePos then
+        teleport(homePos)
+        sendNotify("Дом", "Возврат")
+    else
+        sendNotify("Ошибка", "Дом не установлен", 3)
+    end
+end
+
+-- Автоцикл
+local function randomPos()
+    local x = math.random(settings.randXmin, settings.randXmax)
+    local y = math.random(settings.randYmin, settings.randYmax)
+    local z = math.random(settings.randZmin, settings.randZmax)
+    return Vector3.new(x, y, z)
+end
+
+local stepCount = 0
+local function autoStep()
+    local target = randomPos()
+    teleport(target)
+    stepCount = stepCount + 1
+    if settings.returnEvery > 0 and homePos and stepCount % settings.returnEvery == 0 then
+        teleport(homePos)
+        sendNotify("Автоцикл", "Возврат домой (шаг " .. stepCount .. ")")
+    else
+        sendNotify("Автоцикл", string.format("#%d → (%.0f, %.0f, %.0f)", stepCount, target.X, target.Y, target.Z))
+    end
+end
+
+local function startAuto()
+    if autoActive then return end
+    autoActive = true
+    stepCount = 0
+    sendNotify("Автоцикл", "Запущен")
+    autoCoroutine = task.spawn(function()
+        while autoActive do
+            autoStep()
+            task.wait(settings.loopDelay)
+        end
+    end)
+end
+
+local function stopAuto()
+    if not autoActive then return end
+    autoActive = false
+    if autoCoroutine then task.cancel(autoCoroutine); autoCoroutine = nil end
+    sendNotify("Автоцикл", "Остановлен")
+end
+
+-- Телепорт к игроку
+local function teleportToPlayer(plrName)
+    if plrName == "" then
+        sendNotify("Ошибка", "Игрок не выбран", 2)
+        return
+    end
+    local target = Players:FindFirstChild(plrName)
+    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+        local pos = target.Character.HumanoidRootPart.Position
+        teleport(pos)
+        sendNotify("Телепорт", "К игроку " .. target.DisplayName)
+    else
+        sendNotify("Ошибка", "Игрок не найден или нет персонажа", 3)
+    end
+end
+
+-- Обновить список игроков для дропдауна
+local function getPlayerList()
+    local names = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            table.insert(names, plr.Name)
+        end
+    end
+    table.sort(names)
+    if #names == 0 then names = {"(нет игроков)"} end
+    return names
+end
+
+-- ========== 4. СОЗДАНИЕ GUI (RAYFIELD) ==========
+local Window = Rayfield:CreateWindow({
+    Name = "Телепорт v7.1",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "TeleportScript",
+        FileName = "Settings"
+    },
+    KeySystem = false,
+})
+
+-- ---- Вкладка "Телепорт" ----
+local tpTab = Window:CreateTab("Телепорт", 4483362458)
+
+tpTab:CreateInput({
+    Name = "X координата",
+    CurrentValue = "0",
+    PlaceholderText = "X",
+    Flag = "tpX",
+    Callback = function(val) end
+})
+tpTab:CreateInput({
+    Name = "Y координата",
+    CurrentValue = "100",
+    PlaceholderText = "Y",
+    Flag = "tpY",
+    Callback = function(val) end
+})
+tpTab:CreateInput({
+    Name = "Z координата",
+    CurrentValue = "0",
+    PlaceholderText = "Z",
+    Flag = "tpZ",
+    Callback = function(val) end
+})
+
+tpTab:CreateKeybind({
+    Name = "Телепорт по координатам",
+    CurrentKeybind = "T",
+    HoldToInteract = false,
+    Flag = "tpBind",
+    Callback = function()
+        local x = Window.Flags.tpX or "0"
+        local y = Window.Flags.tpY or "100"
+        local z = Window.Flags.tpZ or "0"
+        tpToCoords(x, y, z)
+    end
+})
+
+tpTab:CreateKeybind({
+    Name = "Установить дом",
+    CurrentKeybind = "H",
+    HoldToInteract = false,
+    Flag = "setHomeBind",
+    Callback = setHome
+})
+
+tpTab:CreateKeybind({
+    Name = "Вернуться домой",
+    CurrentKeybind = "G",
+    HoldToInteract = false,
+    Flag = "goHomeBind",
+    Callback = goHome
+})
+
+-- ---- Вкладка "Автоцикл" ----
+local autoTab = Window:CreateTab("Автоцикл", 4483362458)
+
+autoTab:CreateToggle({
+    Name = "Включить автоцикл",
+    CurrentValue = false,
+    Flag = "autoLoopEnabled",
+    Callback = function(val)
+        if val then startAuto() else stopAuto() end
+    end
+})
+
+autoTab:CreateSlider({
+    Name = "X минимальная",
+    Range = {-10000, 10000},
+    Increment = 10,
+    CurrentValue = settings.randXmin,
+    Flag = "randXmin",
+    Callback = function(val) settings.randXmin = val end
+})
+autoTab:CreateSlider({
+    Name = "X максимальная",
+    Range = {-10000, 10000},
+    Increment = 10,
+    CurrentValue = settings.randXmax,
+    Flag = "randXmax",
+    Callback = function(val) settings.randXmax = val end
+})
+
+autoTab:CreateSlider({
+    Name = "Y минимальная",
+    Range = {0, 500},
+    Increment = 5,
+    CurrentValue = settings.randYmin,
+    Flag = "randYmin",
+    Callback = function(val) settings.randYmin = val end
+})
+autoTab:CreateSlider({
+    Name = "Y максимальная",
+    Range = {0, 500},
+    Increment = 5,
+    CurrentValue = settings.randYmax,
+    Flag = "randYmax",
+    Callback = function(val) settings.randYmax = val end
+})
+
+autoTab:CreateSlider({
+    Name = "Z минимальная",
+    Range = {-10000, 10000},
+    Increment = 10,
+    CurrentValue = settings.randZmin,
+    Flag = "randZmin",
+    Callback = function(val) settings.randZmin = val end
+})
+autoTab:CreateSlider({
+    Name = "Z максимальная",
+    Range = {-10000, 10000},
+    Increment = 10,
+    CurrentValue = settings.randZmax,
+    Flag = "randZmax",
+    Callback = function(val) settings.randZmax = val end
+})
+
+autoTab:CreateSlider({
+    Name = "Задержка между телепортами (сек)",
+    Range = {0.2, 10},
+    Increment = 0.1,
+    CurrentValue = settings.loopDelay,
+    Flag = "loopDelay",
+    Callback = function(val) settings.loopDelay = val end
+})
+
+autoTab:CreateInput({
+    Name = "Возврат домой каждые N шагов (0 = отключить)",
+    CurrentValue = tostring(settings.returnEvery),
+    PlaceholderText = "число",
+    Flag = "returnEvery",
+    Callback = function(val)
+        settings.returnEvery = tonumber(val) or 0
+    end
+})
+
+-- ---- Вкладка "Игроки" ----
+local playerTab = Window:CreateTab("Игроки", 4483362458)
+
+local playerDropdown = playerTab:CreateDropdown({
+    Name = "Выберите игрока",
+    Values = getPlayerList(),
+    CurrentOption = selectedPlayer,
+    Flag = "targetPlayer",
+    Callback = function(option)
+        selectedPlayer = option
+    end
+})
+
+playerTab:CreateButton({
+    Name = "Обновить список",
+    Callback = function()
+        playerDropdown:Refresh(getPlayerList())
+        if #getPlayerList() > 0 and selectedPlayer == "" then
+            selectedPlayer = getPlayerList()[1]
+            playerDropdown:SetValue(selectedPlayer)
+        end
+    end
+})
+
+playerTab:CreateKeybind({
+    Name = "Телепорт к выбранному игроку",
+    CurrentKeybind = "C",
+    HoldToInteract = false,
+    Flag = "tpPlayerBind",
+    Callback = function()
+        if selectedPlayer and selectedPlayer ~= "" and selectedPlayer ~= "(нет игроков)" then
+            teleportToPlayer(selectedPlayer)
+        else
+            sendNotify("Ошибка", "Нет выбранного игрока", 2)
+        end
+    end
+})
+
+-- ---- Настройки интерфейса ----
+local uiTab = Window:CreateTab("UI", 4483362458)
+uiTab:CreateKeybind({
+    Name = "Открыть меню",
+    CurrentKeybind = "RightShift",
+    HoldToInteract = false,
+    Flag = "menuBind",
+    Callback = function() end
+})
+
+-- ========== 5. ЗАГРУЗКА СОХРАНЁННЫХ НАСТРОЕК ==========
+Rayfield:LoadConfiguration()
+
+task.wait(0.5)
+settings.randXmin = Window.Flags.randXmin or settings.randXmin
+settings.randXmax = Window.Flags.randXmax or settings.randXmax
+settings.randYmin = Window.Flags.randYmin or settings.randYmin
+settings.randYmax = Window.Flags.randYmax or settings.randYmax
+settings.randZmin = Window.Flags.randZmin or settings.randZmin
+settings.randZmax = Window.Flags.randZmax or settings.randZmax
+settings.loopDelay = Window.Flags.loopDelay or settings.loopDelay
+settings.returnEvery = tonumber(Window.Flags.returnEvery) or settings.returnEvery
+selectedPlayer = Window.Flags.targetPlayer or ""
+
+if Window.Flags.autoLoopEnabled then
+    startAuto()
+end
+
+sendNotify("Готово", "Телепорт-скрипт загружен. Меню: RightShift (по умолчанию)", 3)
